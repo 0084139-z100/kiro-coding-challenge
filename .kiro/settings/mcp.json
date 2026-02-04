@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "aws-kb": {
-      "command": "uvx",
-      "args": ["mcp-server-aws-kb"],
+      "command": "fastmcp",
+      "args": ["proxy", "https://knowledge-mcp.global.api.aws"],
       "env": {
         "FASTMCP_LOG_LEVEL": "ERROR"
       },
@@ -10,8 +10,14 @@
       "autoApprove": []
     },
     "aws-frontend": {
-      "command": "uvx",
-      "args": ["mcp-aws-frontend"],
+      "command": "uv",
+      "args": [
+        "tool",
+        "run",
+        "--from",
+        "awslabs.frontend-mcp-server@latest",
+        "awslabs.frontend-mcp-server"
+      ],
       "env": {
         "FASTMCP_LOG_LEVEL": "ERROR"
       },
@@ -19,8 +25,14 @@
       "autoApprove": []
     },
     "aws-cdk": {
-      "command": "uvx",
-      "args": ["mcp-server-aws-cdk"],
+      "command": "uv",
+      "args": [
+        "tool",
+        "run",
+        "--from",
+        "mcp-server-aws-cdk@latest",
+        "mcp-server-aws-cdk"
+      ],
       "env": {
         "FASTMCP_LOG_LEVEL": "ERROR"
       },
@@ -28,8 +40,14 @@
       "autoApprove": []
     },
     "fetch": {
-      "command": "uvx",
-      "args": ["mcp-server-fetch"],
+      "command": "uv",
+      "args": [
+        "tool",
+        "run",
+        "--from",
+        "mcp-server-fetch@latest",
+        "mcp-server-fetch"
+      ],
       "env": {
         "FASTMCP_LOG_LEVEL": "ERROR"
       },
