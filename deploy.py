@@ -16,13 +16,29 @@ def create_lambda_zip():
     print("Creating Lambda deployment package...")
     zip_path = 'lambda_function.zip'
     
+    # 依存関係をインストール
+    print("Installing dependencies...")
+    os.system('pip install -r backend/requirements.txt -t backend/package --quiet')
+    
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
         # backend フォルダのファイルを追加
         for root, dirs, files in os.walk('backend'):
+            # packageフォルダは除外
+            if 'package' in root:
+                continue
             for file in files:
                 if file.endswith('.py'):
                     file_path = os.path.join(root, file)
                     arcname = os.path.basename(file_path)
+                    zipf.write(file_path, arcname)
+        
+        # 依存関係を追加
+        package_dir = 'backend/package'
+        if os.path.exists(package_dir):
+            for root, dirs, files in os.walk(package_dir):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    arcname = os.path.relpath(file_path, package_dir)
                     zipf.write(file_path, arcname)
     
     print(f"Created {zip_path}")
@@ -168,6 +184,26 @@ def create_api_gateway(lambda_arn):
     resources = apigateway_client.get_resources(restApiId=api_id)
     root_id = resources['items'][0]['id']
     
+    # ルートにANYメソッドを追加
+    apigateway_client.put_method(
+        restApiId=api_id,
+        resourceId=root_id,
+        httpMethod='ANY',
+        authorizationType='NONE'
+    )
+    
+    # Lambda統合を設定（ルート用）
+    lambda_uri = f'arn:aws:apigateway:us-west-2:lambda:path/2015-03-31/functions/{lambda_arn}/invocations'
+    
+    apigateway_client.put_integration(
+        restApiId=api_id,
+        resourceId=root_id,
+        httpMethod='ANY',
+        type='AWS_PROXY',
+        integrationHttpMethod='POST',
+        uri=lambda_uri
+    )
+    
     # プロキシリソースを作成
     proxy_resource = apigateway_client.create_resource(
         restApiId=api_id,
@@ -176,7 +212,7 @@ def create_api_gateway(lambda_arn):
     )
     proxy_id = proxy_resource['id']
     
-    # ANYメソッドを作成
+    # ANYメソッドを作成（プロキシ用）
     apigateway_client.put_method(
         restApiId=api_id,
         resourceId=proxy_id,
@@ -184,9 +220,7 @@ def create_api_gateway(lambda_arn):
         authorizationType='NONE'
     )
     
-    # Lambda統合を設定
-    lambda_uri = f'arn:aws:apigateway:us-west-2:lambda:path/2015-03-31/functions/{lambda_arn}/invocations'
-    
+    # Lambda統合を設定（プロキシ用）
     apigateway_client.put_integration(
         restApiId=api_id,
         resourceId=proxy_id,

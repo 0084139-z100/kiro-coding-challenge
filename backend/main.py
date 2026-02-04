@@ -68,9 +68,17 @@ def create_event(event: Event):
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @app.get("/events")
-def list_events():
+def list_events(status: Optional[str] = None):
     try:
-        response = table.scan()
+        if status:
+            # ステータスでフィルタリング
+            response = table.scan(
+                FilterExpression='#status = :status',
+                ExpressionAttributeNames={'#status': 'status'},
+                ExpressionAttributeValues={':status': status}
+            )
+        else:
+            response = table.scan()
         return {"events": response.get('Items', [])}
     except ClientError as e:
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
