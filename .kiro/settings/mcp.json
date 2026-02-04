@@ -30,8 +30,8 @@
         "tool",
         "run",
         "--from",
-        "mcp-server-aws-cdk@latest",
-        "mcp-server-aws-cdk"
+        "awslabs.cdk-mcp-server@latest",
+        "awslabs.cdk-mcp-server"
       ],
       "env": {
         "FASTMCP_LOG_LEVEL": "ERROR"
