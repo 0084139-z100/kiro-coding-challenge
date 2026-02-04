@@ -3,6 +3,8 @@ import zipfile
 import os
 import json
 import time
+import subprocess
+import shutil
 from pathlib import Path
 
 # AWS clients
@@ -10,38 +12,50 @@ lambda_client = boto3.client('lambda', region_name='us-west-2')
 apigateway_client = boto3.client('apigateway', region_name='us-west-2')
 dynamodb_client = boto3.client('dynamodb', region_name='us-west-2')
 iam_client = boto3.client('iam', region_name='us-west-2')
+s3_client = boto3.client('s3', region_name='us-west-2')
 
 def create_lambda_zip():
     """Lambda関数のZIPファイルを作成"""
     print("Creating Lambda deployment package...")
-    zip_path = 'lambda_function.zip'
+    
+    import subprocess
+    import shutil
+    
+    # 一時ディレクトリを作成
+    temp_dir = 'lambda_package'
+    if os.path.exists(temp_dir):
+        shutil.rmtree(temp_dir)
+    os.makedirs(temp_dir)
     
     # 依存関係をインストール
     print("Installing dependencies...")
-    os.system('pip install -r backend/requirements.txt -t backend/package --quiet')
+    subprocess.run([
+        'pip', 'install',
+        '-r', 'backend/requirements.txt',
+        '-t', temp_dir,
+        '--quiet'
+    ], check=True)
     
-    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-        # backend フォルダのファイルを追加
-        for root, dirs, files in os.walk('backend'):
-            # packageフォルダは除外
-            if 'package' in root:
-                continue
-            for file in files:
-                if file.endswith('.py'):
-                    file_path = os.path.join(root, file)
-                    arcname = os.path.basename(file_path)
-                    zipf.write(file_path, arcname)
-        
-        # 依存関係を追加
-        package_dir = 'backend/package'
-        if os.path.exists(package_dir):
-            for root, dirs, files in os.walk(package_dir):
-                for file in files:
-                    file_path = os.path.join(root, file)
-                    arcname = os.path.relpath(file_path, package_dir)
-                    zipf.write(file_path, arcname)
+    # Pythonファイルをコピー
+    for file in ['main.py', 'lambda_handler.py', '__init__.py']:
+        src = os.path.join('backend', file)
+        if os.path.exists(src):
+            shutil.copy(src, temp_dir)
     
-    print(f"Created {zip_path}")
+    # ZIPファイルを作成
+    zip_path = 'lambda_function.zip'
+    shutil.make_archive('lambda_function', 'zip', temp_dir)
+    
+    # 一時ディレクトリを削除
+    shutil.rmtree(temp_dir)
+    
+    # ファイルサイズを確認
+    size_mb = os.path.getsize(zip_path) / (1024 * 1024)
+    print(f"Created {zip_path} ({size_mb:.2f} MB)")
+    
+    if size_mb > 50:
+        print("WARNING: Package size exceeds 50MB, deployment may fail")
+    
     return zip_path
 
 def create_dynamodb_table():
@@ -134,36 +148,100 @@ def create_or_update_lambda(role_arn, zip_path):
     """Lambda関数を作成または更新"""
     function_name = 'EventsApiFunction'
     
-    with open(zip_path, 'rb') as f:
-        zip_content = f.read()
+    # ファイルサイズを確認
+    file_size = os.path.getsize(zip_path)
+    size_mb = file_size / (1024 * 1024)
+    
+    # 50MB以上の場合はS3経由でアップロード
+    if size_mb > 50:
+        print(f"Package size ({size_mb:.2f} MB) exceeds 50MB, using S3...")
+        
+        # S3バケットを作成
+        bucket_name = f'lambda-deploy-{int(time.time())}'
+        try:
+            s3_client.create_bucket(
+                Bucket=bucket_name,
+                CreateBucketConfiguration={'LocationConstraint': 'us-west-2'}
+            )
+            print(f"Created S3 bucket: {bucket_name}")
+        except Exception as e:
+            print(f"Error creating bucket: {e}")
+            return None
+        
+        # S3にアップロード
+        s3_key = 'lambda_function.zip'
+        s3_client.upload_file(zip_path, bucket_name, s3_key)
+        print(f"Uploaded to S3: s3://{bucket_name}/{s3_key}")
+        
+        code = {
+            'S3Bucket': bucket_name,
+            'S3Key': s3_key
+        }
+    else:
+        with open(zip_path, 'rb') as f:
+            zip_content = f.read()
+        code = {'ZipFile': zip_content}
     
     try:
         print("Creating Lambda function...")
-        response = lambda_client.create_function(
-            FunctionName=function_name,
-            Runtime='python3.11',
-            Role=role_arn,
-            Handler='lambda_handler.handler',
-            Code={'ZipFile': zip_content},
-            Environment={
-                'Variables': {
-                    'DYNAMODB_TABLE': 'EventsTable'
-                }
-            },
-            Timeout=30,
-            MemorySize=512
-        )
+        if 'ZipFile' in code:
+            response = lambda_client.create_function(
+                FunctionName=function_name,
+                Runtime='python3.11',
+                Role=role_arn,
+                Handler='lambda_handler.handler',
+                Code=code,
+                Environment={
+                    'Variables': {
+                        'DYNAMODB_TABLE': 'EventsTable'
+                    }
+                },
+                Timeout=30,
+                MemorySize=512
+            )
+        else:
+            response = lambda_client.create_function(
+                FunctionName=function_name,
+                Runtime='python3.11',
+                Role=role_arn,
+                Handler='lambda_handler.handler',
+                Code=code,
+                Environment={
+                    'Variables': {
+                        'DYNAMODB_TABLE': 'EventsTable'
+                    }
+                },
+                Timeout=30,
+                MemorySize=512
+            )
         function_arn = response['FunctionArn']
         print(f"Lambda function created: {function_arn}")
         
     except lambda_client.exceptions.ResourceConflictException:
         print("Lambda function already exists, updating...")
-        response = lambda_client.update_function_code(
-            FunctionName=function_name,
-            ZipFile=zip_content
-        )
+        if 'ZipFile' in code:
+            response = lambda_client.update_function_code(
+                FunctionName=function_name,
+                ZipFile=code['ZipFile']
+            )
+        else:
+            response = lambda_client.update_function_code(
+                FunctionName=function_name,
+                S3Bucket=code['S3Bucket'],
+                S3Key=code['S3Key']
+            )
         function_arn = response['FunctionArn']
         print(f"Lambda function updated: {function_arn}")
+        
+        # 環境変数を更新
+        lambda_client.update_function_configuration(
+            FunctionName=function_name,
+            Environment={
+                'Variables': {
+                    'DYNAMODB_TABLE': 'EventsTable'
+                }
+            }
+        )
     
     return function_arn
 
